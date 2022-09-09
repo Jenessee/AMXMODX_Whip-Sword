@@ -1,10 +1,17 @@
 #include <amxmodx>
+#include <amxmisc>
 #include <hamsandwich>
 #include <fakemeta>
 #include <reapi>
 #include <xs>
 
-new const Weapon_DefinitionID = 123;
+#define PLUGIN "Whip Sword"
+#define VERSION "2.0"
+#define AUTHOR "Jenessee"
+
+#define WEAPONS_FILE "jenessee_weapons.ini"
+
+new const Weapon_DefinitionID = 125321;
 new const Resources[][] = 
 {
 	"models/v_whipsword.mdl", // 0	
@@ -47,37 +54,54 @@ enum
 	HIT_WALL
 };
 
-enum _:Cvars
+enum
 {
-	Float:CVAR_DAMAGE_A,
-	Float:CVAR_DAMAGE_A2,
-	Float:CVAR_DAMAGE_B,
-	Float:CVAR_DAMAGE_B2,
-	Float:CVAR_DAMAGE_C,
-	Float:CVAR_HOOK_SPEED
+	PLAYER_TEAM_UNASSIGNED,
+	PLAYER_TEAM_ZOMBIE,
+	PLAYER_TEAM_HUMAN
 };
 
 const EntVars:var_slashcount = var_iuser1;
 const EntVars:var_stabcount = var_iuser2;
 
-new Cvar[Cvars];
+enum _:Values
+{
+	Float:DAMAGE_A, // 0
+	Float:DAMAGE_A2, // 1
+	Float:DAMAGE_B, // 2
+	Float:DAMAGE_B2,  // 3
+	Float:DAMAGE_C,  // 4
+	Float:RANGE_A,  // 5
+	Float:RANGE_A2,  // 6
+	Float:RANGE_B,  // 7
+	Float:RANGE_B2,  // 8
+	Float:RANGE_C,  // 9
+	Float:KNOCKBACK_C,  // 10
+	Float:KNOCKUP_C,// 11
+	Float:HOOK_SPEED // 12
+};
+
+new fValues[Values];
 new Message_WeaponListID;
-new Weapon_EntityID[MAX_PLAYERS+1], iBloodPrecacheID[2], iTotalPlayerUseWeapon, iTotalAlivePlayers;
+new Weapon_EntityID[MAX_PLAYERS+1], iBloodPrecacheID[2], iTotalPlayerUseWeapon, iTotalAlivePlayers, playerTeam[MAX_PLAYERS+1], handleNewRound;
 new Array:Array_AlivePlayers;
-new HookChain:HC_DefaultDeploy, HookChain:AddPlayerItem;
+new HookChain:HC_DefaultDeploy, HookChain:HC_AddPlayerItem;
 new HamHook:HAM_Item_PostFrame;
 new FW_EmitSound, FW_UpdateClientData, FW_OnFreeEntPrivateData;
+new bool:isZombiePlague, bool:isRoundStarted;
 
 public plugin_init()
 {
-	register_plugin("Whip Sword", "FINAL", "Jenessee");
+	register_plugin(PLUGIN, VERSION, AUTHOR);
 
 	register_clcmd("knife_whipsword", "Hook_Knife");
+	
+	register_clcmd("give_whip", "Give_Knife");
 
-	register_clcmd("get_whipsword", "Give");
+	disable_event(handleNewRound = register_event("HLTV", "OnNewRound", "a", "1=0", "2=0"));
 
+	DisableHookChain(HC_AddPlayerItem = RegisterHookChain(RG_CBasePlayer_AddPlayerItem, "CBasePlayer_AddPlayerItem", false));
 	DisableHookChain(HC_DefaultDeploy = RegisterHookChain(RG_CBasePlayerWeapon_DefaultDeploy, "CBasePlayerWeapon_DefaultDeploy", false));
-	DisableHookChain(AddPlayerItem = RegisterHookChain(RG_CBasePlayer_AddPlayerItem, "CBasePlayer_AddPlayerItem", false));
 	RegisterHookChain(RG_CBasePlayer_Spawn, "CBasePlayer_Spawn", true);
 	RegisterHookChain(RG_CBasePlayer_Killed, "CBasePlayer_Killed");
 
@@ -86,12 +110,26 @@ public plugin_init()
 	Message_WeaponListID = get_user_msgid("WeaponList");
 
 	Array_AlivePlayers = ArrayCreate(1);
-
-	RegisterCvars();
 }
 
 public plugin_precache()
 {
+	fValues[DAMAGE_A] = 10.0;
+	fValues[DAMAGE_A2] = 20.0;
+	fValues[DAMAGE_B] = 15.0;
+	fValues[DAMAGE_B2] = 5.0;
+	fValues[DAMAGE_C] = 30.0;
+	fValues[RANGE_A] = 150.0;
+	fValues[RANGE_A2] = 175.0;
+	fValues[RANGE_B] = 160.0;
+	fValues[RANGE_B2] = 200.0;
+	fValues[RANGE_C] = 300.0;
+	fValues[KNOCKBACK_C] = 1300.0;
+	fValues[KNOCKUP_C] = 250.0;
+	fValues[HOOK_SPEED] = 1000.0;
+
+	Load_Weapon_Configs();
+
 	for(new index = 0; index < sizeof(Resources); index++)
 	{
 		switch(index)
@@ -111,22 +149,14 @@ public plugin_natives()
 	register_native("Get_Whipsword", "Native_Get_WhipSword");
 }
 
-native Get_Whipsword(const clientIndex);
-public Give(clientIndex)
-{
-	Get_Whipsword(clientIndex);
-	return PLUGIN_HANDLED;
-}
-
 public Native_Get_WhipSword(iPlugin, iParams)
 {
 	new clientIndex = get_param(1);
-	if(clientIndex > 0 && clientIndex <= MAX_PLAYERS)
+	if(clientIndex > 0 && clientIndex <= MAX_PLAYERS && playerTeam[clientIndex] != PLAYER_TEAM_ZOMBIE)
 	{
-		rg_remove_item(clientIndex, "weapon_knife");
-		EnableHookChain(AddPlayerItem);
-		rg_give_item(clientIndex, "weapon_knife");
-		DisableHookChain(AddPlayerItem);
+		EnableHookChain(HC_AddPlayerItem);
+		rg_give_custom_item(clientIndex, "weapon_knife", GT_REPLACE, Weapon_DefinitionID);
+		DisableHookChain(HC_AddPlayerItem);
 		engclient_cmd(clientIndex, "weapon_knife");
 	}	
 }
@@ -136,10 +166,49 @@ public plugin_end()
 	ArrayDestroy(Array_AlivePlayers);
 }
 
+native Get_Whipsword(clientIndex);
+public Give_Knife(const clientIndex)
+{
+	Get_Whipsword(clientIndex);
+	return PLUGIN_HANDLED;
+}
+
 public Hook_Knife(const clientIndex)
 {
 	engclient_cmd(clientIndex, "weapon_knife");
 	return PLUGIN_HANDLED;
+}
+
+public OnNewRound()
+{
+	isRoundStarted = false;
+}
+
+public zp_user_humanized_pre(const clientIndex)
+{
+	if(!isZombiePlague) 
+	{
+		enable_event(handleNewRound);
+		isZombiePlague = true;
+	}
+
+	playerTeam[clientIndex] = PLAYER_TEAM_HUMAN; 
+}
+
+public zp_user_infected_pre(const clientIndex)
+{
+	if(!isZombiePlague) 
+	{
+		enable_event(handleNewRound);
+		isZombiePlague = true;
+	}
+
+	playerTeam[clientIndex] = PLAYER_TEAM_ZOMBIE; 
+}
+
+public zp_round_started(gamemode, id)
+{
+	isRoundStarted = true;
 }
 
 public client_disconnected(clientIndex)
@@ -150,6 +219,8 @@ public client_disconnected(clientIndex)
 		ArrayDeleteItem(Array_AlivePlayers, iArrayID);
 		iTotalAlivePlayers--;
 	}	
+
+	playerTeam[clientIndex] = PLAYER_TEAM_UNASSIGNED;
 }
 
 public EmitSound(const clientIndex, const iChannel, const szSound[])
@@ -208,8 +279,6 @@ public OnEntityRemoved(const entityIndex)
 
 public CBasePlayer_AddPlayerItem(const clientIndex, const iWeaponEntityID)
 {
-	set_entvar(iWeaponEntityID, var_impulse, Weapon_DefinitionID);
-
 	message_begin(MSG_ONE_UNRELIABLE, Message_WeaponListID, _, clientIndex); 
 	write_string("knife_whipsword");
 	write_byte(-1);
@@ -245,9 +314,6 @@ public CBasePlayerWeapon_DefaultDeploy(const iWeaponEntityID, const szViewModel[
 		SetHookChainArg(4, ATYPE_INTEGER, 14); 
 		SetHookChainArg(5, ATYPE_STRING, "knife"); 
 
-		SetThink(iWeaponEntityID, "Think_Buttons");
-		set_entvar(iWeaponEntityID, var_nextthink, get_gametime() + 1.0); 
-
 		set_task(1.0, "Task_Idle", iWeaponEntityID+Weapon_DefinitionID);
 		
 		Weapon_EntityID[clientIndex] = iWeaponEntityID; 
@@ -255,12 +321,28 @@ public CBasePlayerWeapon_DefaultDeploy(const iWeaponEntityID, const szViewModel[
 		if(get_entvar(iWeaponEntityID, var_slashcount)) set_entvar(iWeaponEntityID, var_slashcount, 0);
 		if(get_entvar(iWeaponEntityID, var_stabcount)) set_entvar(iWeaponEntityID, var_stabcount, 0);
 
+		RequestFrame("Refresh_ViewModel", clientIndex);
 	} else if(Weapon_EntityID[clientIndex] > 0) {
 		if(get_entvar(Weapon_EntityID[clientIndex], var_stabcount) >= 5) emit_sound(clientIndex, CHAN_WEAPON, "common/null.wav", 0.6, 0.4, 0, 94 + random_num(0, 55));
 		remove_task(Weapon_EntityID[clientIndex]+Weapon_DefinitionID);
 		SetThink(Weapon_EntityID[clientIndex], "");
 		Weapon_EntityID[clientIndex] = NULLENT;
 	} 
+}
+
+public Refresh_ViewModel(const clientIndex)
+{
+	new weaponEntity = Weapon_EntityID[clientIndex]
+	if(weaponEntity > 0)
+	{
+		set_entvar(clientIndex, var_viewmodel, Resources[0]);
+		set_entvar(clientIndex, var_weaponmodel, Resources[2]);
+
+		Weapon_Animation(clientIndex, 14);
+
+		SetThink(weaponEntity, "Think_Buttons");
+		set_entvar(weaponEntity, var_nextthink, get_gametime() + 1.0); 
+	}
 }
 
 public CBasePlayer_Spawn(const clientIndex)
@@ -315,7 +397,7 @@ public Think_Buttons(const iWeaponEntityID)
 
 				set_entvar(iWeaponEntityID, var_slashcount, 4);
 
-				Do_Damage(clientIndex, 300.0, Cvar[CVAR_DAMAGE_C], 180.0, 1300.0, 250.0, 1.0);
+				Do_Damage(clientIndex, fValues[RANGE_C], fValues[DAMAGE_C], 180.0, fValues[KNOCKBACK_C], fValues[KNOCKUP_C], 1.0);
 
 				Create_Effect(clientIndex, Resources[5], 0);
 				Player_Animation(clientIndex, "ref_shoot_knife", 1.0);
@@ -354,7 +436,7 @@ public Think_Buttons(const iWeaponEntityID)
 				set_entvar(iWeaponEntityID, var_fuser1, Time + 5.0);
 			}
 
-			new Hit = Do_Damage(clientIndex, 200.0, Cvar[CVAR_DAMAGE_B2], 90.0, 0.0, 0.0, 0.25);
+			new Hit = Do_Damage(clientIndex, fValues[RANGE_B2], fValues[DAMAGE_B2], 90.0, 0.0, 0.0, 0.0);
 			if(Hit == HIT_ENEMY) emit_sound(clientIndex, CHAN_ITEM, Resources[21], 1.0, 0.4, 0, 94 + random_num(0, 35));
 
 			set_task(0.25, "Task_StabLoop_End", iWeaponEntityID+Weapon_DefinitionID);
@@ -372,7 +454,7 @@ public Think_Buttons(const iWeaponEntityID)
 
 			set_task(0.8, "Task_Stab_End", iWeaponEntityID+Weapon_DefinitionID);
 
-			new Hit = Do_Damage(clientIndex, 160.0, Cvar[CVAR_DAMAGE_B], 45.0, 0.0, 0.0, 0.25);
+			new Hit = Do_Damage(clientIndex, fValues[RANGE_B], fValues[DAMAGE_B], 45.0, 0.0, 0.0, 0.0);
 			switch(Hit)
 			{
 				case HIT_ENEMY: emit_sound(clientIndex, CHAN_ITEM, Resources[21], 1.0, 0.4, 0, 94 + random_num(0, 35));	
@@ -387,8 +469,8 @@ public Think_Buttons(const iWeaponEntityID)
 	{
 		remove_task(iWeaponEntityID+Weapon_DefinitionID);
 		if((iTotalStab = get_entvar(iWeaponEntityID, var_stabcount)) > 0) 
-		{
-			if(iTotalStab >= 5)
+		{	
+			if(iTotalStab >= 5 && fValues[HOOK_SPEED] > 0.0)
 			{
 				Weapon_Animation(clientIndex, 11);
 				emit_sound(clientIndex, CHAN_WEAPON, Resources[19], 0.6, 0.4, 0, 94 + random_num(0, 55));
@@ -397,7 +479,7 @@ public Think_Buttons(const iWeaponEntityID)
 
 				new Float:vMyVelocity[3], Float:vVelocity[3]; 
 				get_entvar(clientIndex, var_velocity, vMyVelocity);
-				velocity_by_aim(clientIndex, 1000, vVelocity);
+				velocity_by_aim(clientIndex, floatround(fValues[HOOK_SPEED]), vVelocity);
 				xs_vec_add(vMyVelocity, vVelocity, vVelocity);
 				vVelocity[2] += 250.0;
 				set_entvar(clientIndex, var_velocity, vVelocity);
@@ -434,7 +516,7 @@ public Think_Buttons(const iWeaponEntityID)
 
 			set_task(0.7, "Task_SlashLoop_End", iWeaponEntityID+Weapon_DefinitionID);
 
-		 	Do_Damage(clientIndex, 175.0, Cvar[CVAR_DAMAGE_A2], 180.0, 0.0, 0.0, 0.25);
+		 	Do_Damage(clientIndex, fValues[RANGE_A2], fValues[DAMAGE_A2], 180.0, 0.0, 0.0, 0.0);
 		} else {
 			Weapon_Animation(clientIndex, 1);
 
@@ -447,7 +529,7 @@ public Think_Buttons(const iWeaponEntityID)
 
 			Create_Effect(clientIndex, Resources[3], 8192);
 
-			new Hit = Do_Damage(clientIndex, 150.0, Cvar[CVAR_DAMAGE_A], 90.0, 0.0, 0.0, 0.25);
+			new Hit = Do_Damage(clientIndex, fValues[RANGE_A], fValues[DAMAGE_A], 90.0, 0.0, 0.0, 0.0);
 			switch(Hit)
 			{
 				case HIT_ENEMY:	emit_sound(clientIndex, CHAN_ITEM, Resources[21], 1.0, 0.4, 0, 94 + random_num(0, 35));	
@@ -634,18 +716,16 @@ public Frame_ParentOwner(const entityIndex)
 
 public Think_Fadeout(const entityIndex)
 {
-	static Float:timeLapse, Float:Time, Float:Renderamt; 
-	Time = get_gametime(); 
-	Renderamt = get_entvar(entityIndex, var_renderamt);
+	static Float:Renderamt; Renderamt = get_entvar(entityIndex, var_renderamt);
 
-	if((Renderamt -= (Time - timeLapse) * 0.4) <= 0.0) 
+	if((Renderamt -= 6.0) <= 0.0) 
 	{
 		set_entvar(entityIndex, var_flags, FL_KILLME);
 		return;
 	}
 
 	set_entvar(entityIndex, var_renderamt, Renderamt);
-	set_entvar(entityIndex, var_nextthink, Time);
+	set_entvar(entityIndex, var_nextthink, get_gametime());
 }
 
 public Think_Effect_SlashCharge(const entityIndex)
@@ -686,6 +766,12 @@ Do_Damage(const clientIndex, const Float:Damage_Range, const Float:Damage, const
 		victimIndex = ArrayGetCell(Array_AlivePlayers, iArrayID);
 		if(victimIndex == clientIndex)	
 			continue;
+		if(isZombiePlague)
+		{
+			if(!isRoundStarted) break;
+			if(playerTeam[clientIndex] == playerTeam[victimIndex])
+				continue;
+		}
 		if(!rg_is_player_can_takedamage(victimIndex, clientIndex))
 			continue;
 		Get_Position(victimIndex, 0.0, 0.0, 0.0, vVictimPosition, Float:{0.0, 0.0, 0.0}, false, Float:{0.0, 0.0, 0.0}, false);
@@ -902,28 +988,169 @@ bool:Can_See(const clientIndex, const targetIndex)
 	}
 	return false;
 }
-
-RegisterCvars()
+	
+Load_Weapon_Configs()
 {
-	new pCvar;
+	new szPath[64]; get_configsdir(szPath, charsmax(szPath));
+	format(szPath, charsmax(szPath), "%s/%s", szPath, WEAPONS_FILE);
 
-	pCvar = create_cvar("whipsword_damage_slash_normal", "10", FCVAR_NONE, "", true, 0.0);
-	bind_pcvar_float(pCvar, Cvar[CVAR_DAMAGE_A]);
+	if (!file_exists(szPath))
+	{
+		new Error[100]; formatex(Error, charsmax(Error), "Dosya bulunamadi %s!", szPath);
+		set_fail_state(Error);
+		return;
+	}
 
-	pCvar = create_cvar("whipsword_damage_slash_charged", "20", FCVAR_NONE, "", true, 0.0);
-	bind_pcvar_float(pCvar, Cvar[CVAR_DAMAGE_A2]);
+	new linedata[1024], key[64], value[960], File = fopen(szPath, "rt"), bool:isGun, bool:isNewGun = true, Float:fValue;
+	while(File && !feof(File))
+	{
+		fgets(File, linedata, charsmax(linedata));
+		replace(linedata, charsmax(linedata), "^n", "");
 
-	pCvar = create_cvar("whipsword_damage_stab_normal", "15", FCVAR_NONE, "", true, 0.0);
-	bind_pcvar_float(pCvar, Cvar[CVAR_DAMAGE_B]);
+		if (!linedata[0] || linedata[0] == ';' || (linedata[0] == '/' && linedata[1] == '/')) continue;
+			
+		if (linedata[0] == '[')
+		{
+			linedata[strlen(linedata) - 1] = 0;
+			copy(linedata, charsmax(linedata), linedata[1]);
+				
+			if(equal(linedata, PLUGIN))
+			{
+				isGun = true;
+				isNewGun = false;
+			} else isGun = false;
+		}
+		if(!isGun) 
+			continue;
 
-	pCvar = create_cvar("whipsword_damage_stab_charged", "5", FCVAR_NONE, "", true, 0.0);
-	bind_pcvar_float(pCvar, Cvar[CVAR_DAMAGE_B2]);
+		strtok(linedata, key, charsmax(key), value, charsmax(value), '=');
+			
+		trim(key);
+		trim(value);
 
-	pCvar = create_cvar("whipsword_damage_whip_explosion", "30", FCVAR_NONE, "", true, 0.0);
-	bind_pcvar_float(pCvar, Cvar[CVAR_DAMAGE_C]);
+		fValue = str_to_float(value);
+		if(equal(key, "DAMAGE SLASH NORMAL")) 
+		{
+			fValues[DAMAGE_A] = floatmax(fValue, 1.0);
+		} else if(equal(key, "DAMAGE SLASH CHARGED")) {
+			fValues[DAMAGE_A2] = floatmax(fValue, 1.0);
+		} else if(equal(key, "DAMAGE STAB NORMAL")) {
+			fValues[DAMAGE_B] = floatmax(fValue, 1.0);
+		} else if(equal(key, "DAMAGE STAB CHARGED")) {
+			fValues[DAMAGE_B2] = floatmax(fValue, 1.0);
+		} else if(equal(key, "DAMAGE WHIP EXPLOSION")) {
+			fValues[DAMAGE_C] = floatmax(fValue, 1.0);
+		} else if(equal(key, "RANGE SLASH NORMAL")) {
+			fValues[RANGE_A] = floatmax(fValue, 1.0);
+		} else if(equal(key, "RANGE SLASH CHARGED")) {
+			fValues[RANGE_A2] = floatmax(fValue, 1.0);
+		} else if(equal(key, "RANGE STAB NORMAL")) {
+			fValues[RANGE_B] = floatmax(fValue, 1.0);
+		} else if(equal(key, "RANGE STAB CHARGED")) {
+			fValues[RANGE_B2] = floatmax(fValue, 1.0);
+		} else if(equal(key, "RANGE WHIP EXPLOSION")) {
+			fValues[RANGE_C] = floatmax(fValue, 1.0);
+		} else if(equal(key, "KNOCKBACK WHIP EXPLOSION")) {
+			fValues[KNOCKBACK_C] = floatmax(fValue, 0.0);
+		} else if(equal(key, "KNOCKUP WHIP EXPLOSION")) {
+			fValues[KNOCKUP_C] = floatmax(fValue, 0.0);
+		} else if(equal(key, "STAB HOOK SPEED")) {
+			fValues[HOOK_SPEED] = floatmax(fValue, 0.0);
+		}
+	}
 
-	pCvar = create_cvar("whipsword_stab_hook_speed", "1000", FCVAR_NONE, "", true, 0.0);
-	bind_pcvar_float(pCvar, Cvar[CVAR_HOOK_SPEED]);
+	if (File) fclose(File);
 
-	AutoExecConfig(true, "whipsword");
+	if(isNewGun) Save_Weapon_Configs();
+}
+
+Save_Weapon_Configs()
+{
+	new szBuffer[512], szPath[64], File; get_configsdir(szPath, charsmax(szPath));
+	format(szPath, charsmax(szPath), "%s/%s", szPath, WEAPONS_FILE);
+
+	File = fopen(szPath, "at");
+
+	format(szBuffer, charsmax(szBuffer), "^n[%s]", PLUGIN);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Sol tıklayınca yapılan mavi saldırıların hasarını ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nDAMAGE SLASH NORMAL = %0.1f", fValues[DAMAGE_A]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Sol tıka basılı tutunca yapılan kırmızı saldırıların hasarını ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nDAMAGE SLASH CHARGED = %0.1f", fValues[DAMAGE_A2]);
+	fputs(File, szBuffer);
+	
+	formatex(szBuffer, charsmax(szBuffer), "^n// Sağ tıklayınca yapılan mavi saldırıların hasarını ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nDAMAGE STAB NORMAL = %0.1f", fValues[DAMAGE_B]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Sağ tıka basılı tutunca yapılan seri saldırıların hasarını ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nDAMAGE STAB CHARGED = %0.1f", fValues[DAMAGE_B2]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Kombo hareketi yapınca verilen hasarı ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nDAMAGE WHIP EXPLOSION = %0.1f", fValues[DAMAGE_C]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Sol tıklayınca yapılan mavi saldırıların menzilini ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nRANGE SLASH NORMAL = %0.1f", fValues[RANGE_A]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Sol tıka basılı tutunca yapılan kırmızı saldırıların menzilini ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nRANGE SLASH CHARGED = %0.1f", fValues[RANGE_A2]);
+	fputs(File, szBuffer);
+	
+	formatex(szBuffer, charsmax(szBuffer), "^n// Sağ tıklayınca yapılan mavi saldırıların menzilini ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nRANGE STAB NORMAL = %0.1f", fValues[RANGE_B]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Sağ tıka basılı tutunca yapılan seri saldırıların menzilini ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nRANGE STAB CHARGED = %0.1f", fValues[RANGE_B2]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Kombo hareketi yapınca saldırının menzilini ayarlar.");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nRANGE WHIP EXPLOSION = %0.1f", fValues[RANGE_C]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Kombo hareketi yapınca saldırının düşmanı ittirme hızını ayarlar (0 yaparsan kapanır).");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nKNOCKBACK WHIP EXPLOSION = %0.1f", fValues[KNOCKBACK_C]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Kombo hareketi yapınca saldırının düşmanı havaya kaldırma hızını ayarlar (0 yaparsan kapanır).");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nKNOCKUP WHIP EXPLOSION = %0.1f", fValues[KNOCKUP_C]);
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^n// Kombo hareketi yapınca kırbaçla duvara çekme hızını ayarlar (0 yaparsan kapanır).");
+	fputs(File, szBuffer);
+
+	formatex(szBuffer, charsmax(szBuffer), "^nSTAB HOOK SPEED = %0.1f^n", fValues[HOOK_SPEED]);
+	fputs(File, szBuffer);
+
+	fclose(File);
 }
